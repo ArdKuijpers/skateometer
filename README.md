@@ -1,3 +1,3 @@
-# skateometer
+# skate-o-meter
 
-Skating comfort meter
+This project creates a Skating comfort meter.
