@@ -1,0 +1,3 @@
+# skateometer
+
+Skating comfort meter
