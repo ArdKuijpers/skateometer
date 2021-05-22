@@ -19,28 +19,32 @@ class SkateBLEServer : public BLEServerCallbacks {
         void setup();
         void loop();
     private:
+        bool _hasSpeed = false;
+
         bool _deviceConnected = false;
         bool _oldDeviceConnected = false;
-        unsigned long _updateInterval = 1000;
+        unsigned long _simulationUpdateInterval = 1000;
+        unsigned long _lastSimulationUpdate = 0;
+        unsigned long _updateInterval = 500;
         unsigned long _lastUpdate = 0;
 
-        uint8_t _lastBattery = 100;
+        uint8_t _lastBattery = 80;
 
         //Cycling Variables
-        uint16_t _simulatedSpeedKmph = 0;      
-        uint16_t _simulatedCrankRpm = 0; 
+        uint16_t _simulatedSpeedKmph = 30;      
+        uint16_t _simulatedCadence = 90;
+        bool _increasing = true; 
 
-        uint16_t _wheel_rev_period = 0;
-        uint16_t _crank_rev_period = 0;
-        uint32_t _cum_wheel_rev = 10;
+        //CSC values
+        uint32_t _cum_wheel_revs = 0;
         uint16_t _last_wheel_event = 0;
-        uint16_t _cum_cranks = 0;
+        uint16_t _cum_crank_revs = 0;
         uint16_t _last_crank_event = 0;
 
         uint8_t _sensorLocation = SENSOR_LOCATION_IN_SHOE;
 
-        byte _cscMeasurement[11] = { 0b00000010, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-        byte _cscFeature[2]      = { 0b00000010, 0};
+        byte _cscMeasurement[11] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        byte _cscFeature[2]      = { 0, 0};
 
         BLEServer* _pServer;
         BLEService* _pCyclingSpeedAndCadenceService;
@@ -52,6 +56,8 @@ class SkateBLEServer : public BLEServerCallbacks {
         BLECharacteristic* _pCSCFeatureCharacteristic;
         BLECharacteristic* _pBatteryLevelCharacteristic;
 
+        void updateClient();
+        void updateSpeedAndCadence(uint16_t speedKmph, uint16_t cadenceRPM);
 
         void onConnect(BLEServer* pServer, esp_ble_gatts_cb_param_t* param) {
             auto remoteAddress = getRemoteAddress(param);
@@ -65,7 +71,7 @@ class SkateBLEServer : public BLEServerCallbacks {
         }
 
         String getRemoteAddress(esp_ble_gatts_cb_param_t* param);
-        void simulate_speed_and_cadence();
+        void updateSpeedAndCadence();
 };
 
 void SkateBLEServer::setup() {
@@ -73,8 +79,16 @@ void SkateBLEServer::setup() {
     BLEDevice::init("Skate-O-Meter");
     _pServer = BLEDevice::createServer();
     _pServer->setCallbacks(this);
-    _pCyclingSpeedAndCadenceService = _pServer->createService(GATT_CSC_SERVICE_UUID);
 
+    if (_hasSpeed) {
+        _cscMeasurement[0] = 0b00000011;
+        _cscFeature[0] = 0b00000011;
+    } else {
+        _cscMeasurement[0] = 0b00000010;
+        _cscFeature[0] = 0b00000010;
+    }
+
+    _pCyclingSpeedAndCadenceService = _pServer->createService(GATT_CSC_SERVICE_UUID);
     _pCSCMeasurementCharacteristic = _pCyclingSpeedAndCadenceService->createCharacteristic(GATT_CSC_MEASUREMENT_UUID, BLECharacteristic::PROPERTY_NOTIFY);
     _pCSCMeasurementCharacteristic->addDescriptor(new BLE2902());
     _pSensorLocationCharacteristic = _pCyclingSpeedAndCadenceService->createCharacteristic(GATT_SENSOR_LOCATION_UUID, BLECharacteristic::PROPERTY_READ);
@@ -99,53 +113,28 @@ void SkateBLEServer::setup() {
 }
 
 inline void SkateBLEServer::loop() {
-    if (millis() - _lastUpdate >= _updateInterval) {
-        _lastUpdate = millis();
-        simulate_speed_and_cadence();
-        if (--_lastBattery < 50) {
-            _lastBattery = 100;
+    updateSpeedAndCadence();
+    if (millis() - _lastSimulationUpdate >= _simulationUpdateInterval) {
+        _lastSimulationUpdate = millis();
+        if (_increasing) {
+            _simulatedSpeedKmph++;
+            _simulatedCadence++;
+            _lastBattery--;
+        } else {
+            _simulatedSpeedKmph--;
+            _simulatedCadence--;
+            _lastBattery++;
         }
-        
-        if (_deviceConnected) {
-            _pBatteryLevelCharacteristic->setValue(&_lastBattery, 1);
-            _pBatteryLevelCharacteristic->notify();
-            Serial.println("---------------------------------------------");
-            Serial.println("Battery level "+String(_lastBattery)+String("% posted"));
 
-            //The Cycle Measurement Characteristic data is defined here:
-            //https://www.bluetooth.com/wp-content/uploads/Sitecore-Media-Library/Gatt/Xml/Characteristics/org.bluetooth.characteristic.csc_measurement.xml
-            //Frist byte is flags. Wheel Revolution Data Present (0 = false, 1 = true) = 1, Crank Revolution Data Present (0 = false, 1 = true), so the flags are 0x03 (binary 11 converted to HEX).
-            //buf[0]=0x03;
-          
-            // Setting values for cycling measures (from the Characteristic File)
-            //Cumulative Wheel Revolutions (unitless)
-            //Last Wheel Event Time (Unit has a resolution of 1/1024s)
-            //Cumulative Crank Revolutions (unitless)
-            //Last Crank Event Time (Unit has a resolution of 1/1024s)
-            
-            if (_cscMeasurement[0] & CSC_FEATURE_WHEEL_REV_DATA) {
-                memcpy(&_cscMeasurement[1], &_cum_wheel_rev, 4);
-                memcpy(&_cscMeasurement[5], &_last_wheel_event, 2);
-                memcpy(&_cscMeasurement[7], &_cum_cranks, 2);
-                memcpy(&_cscMeasurement[9], &_last_crank_event, 2);
-            } else {
-                memcpy(&_cscMeasurement[1], &_cum_cranks, 2);
-                memcpy(&_cscMeasurement[3], &_last_crank_event, 2);
-            }
+        if (_simulatedSpeedKmph >= 50)
+            _increasing = false;   
+        if (_simulatedSpeedKmph <= 20)
+            _increasing = true;
 
-            _pCSCMeasurementCharacteristic->setValue(_cscMeasurement, sizeof(_cscMeasurement));
-            _pCSCMeasurementCharacteristic->notify();
-            Serial.println("---------------------------------------------");
-            Serial.println("Speed (km/h) : " + String(_simulatedSpeedKmph));
-            Serial.println("Crank RPM : " + String(_simulatedCrankRpm));
-            Serial.println("Wheel Rev Period " + String(_wheel_rev_period));
-            Serial.println("Crank Rev Period " + String(_crank_rev_period));
-            Serial.println("- - - - - - - - - - - - - - - - - - - - - - -");
-            Serial.println("Cum Wheel Rev : " + String(_cum_wheel_rev));
-            Serial.println("Cum Crank : " + String(_cum_cranks));
-            Serial.println("Last Wheel Event " + String(_last_wheel_event));
-            Serial.println("Last Crank Event " + String(_last_crank_event));
-        }
+        Serial.print("Increasing: " + String(_increasing));
+        Serial.print(", Speed: " + String(_simulatedSpeedKmph));
+        Serial.print("km/h, Cadence: " + String(_simulatedCadence));
+        Serial.println("rpm, Battery level "+String(_lastBattery)+String("%"));
     }
 
     // disconnecting
@@ -161,6 +150,44 @@ inline void SkateBLEServer::loop() {
 		// do stuff here on connecting
         _oldDeviceConnected = _deviceConnected;
     }
+}
+
+inline void SkateBLEServer::updateClient() {
+    if (!_deviceConnected)
+        return;
+
+    _pBatteryLevelCharacteristic->setValue(&_lastBattery, 1);
+    _pBatteryLevelCharacteristic->notify();
+
+    //The Cycle Measurement Characteristic data is defined here:
+    //https://www.bluetooth.com/wp-content/uploads/Sitecore-Media-Library/Gatt/Xml/Characteristics/org.bluetooth.characteristic.csc_measurement.xml
+    //Frist byte is flags. Wheel Revolution Data Present (0 = false, 1 = true) = 1, Crank Revolution Data Present (0 = false, 1 = true), so the flags are 0x03 (binary 11 converted to HEX).
+    //buf[0]=0x03;
+    
+    // Setting values for cycling measures (from the Characteristic File)
+    //Cumulative Wheel Revolutions (unitless)
+    //Last Wheel Event Time (Unit has a resolution of 1/1024s)
+    //Cumulative Crank Revolutions (unitless)
+    //Last Crank Event Time (Unit has a resolution of 1/1024s)
+    
+    if (_cscMeasurement[0] & CSC_FEATURE_WHEEL_REV_DATA) {
+        memcpy(&_cscMeasurement[1], &_cum_wheel_revs, 4);
+        memcpy(&_cscMeasurement[5], &_last_wheel_event, 2);
+        memcpy(&_cscMeasurement[7], &_cum_crank_revs, 2);
+        memcpy(&_cscMeasurement[9], &_last_crank_event, 2);
+    } else {
+        memcpy(&_cscMeasurement[1], &_cum_crank_revs, 2);
+        memcpy(&_cscMeasurement[3], &_last_crank_event, 2);
+    }
+
+    _pCSCMeasurementCharacteristic->setValue(_cscMeasurement, sizeof(_cscMeasurement));
+    _pCSCMeasurementCharacteristic->notify();
+    // Serial.println("- - - - - - - - - - - - - - - - - - - - - - -");
+    // Serial.println("Battery level "+String(_lastBattery));
+    // Serial.println("Cum Wheel Rev : " + String(_cum_wheel_revs));
+    // Serial.println("Cum Crank : " + String(_cum_crank_revs));
+    // Serial.println("Last Wheel Event " + String(_last_wheel_event));
+    // Serial.println("Last Crank Event " + String(_last_crank_event));
 }
 
 inline String SkateBLEServer::getRemoteAddress(esp_ble_gatts_cb_param_t* param)
@@ -195,32 +222,43 @@ inline String SkateBLEServer::getRemoteAddress(esp_ble_gatts_cb_param_t* param)
      *                         10^6 * speed [kph] 
      */
      //---------------------------------------------------------------------------------------------
-inline void SkateBLEServer::simulate_speed_and_cadence()
+inline void SkateBLEServer::updateSpeedAndCadence()
 {
-    /* Update simulated crank and wheel rotation speed */
-    _simulatedSpeedKmph++;
-    if (_simulatedSpeedKmph >= MAX_SPEED_KPH) {
-         _simulatedSpeedKmph = MIN_SPEED_KPH;
-    }
-    
-    _simulatedCrankRpm++;
-    if (_simulatedCrankRpm >= MAX_CRANK_RPM) {
-         _simulatedCrankRpm = MIN_CRANK_RPM;
-    }
-    
+    static double wheelRevolutions=0;
+    static double crankRevolutions=0;
+    static uint32_t cum_wheel_revs_old=0;
+    static uint16_t cum_crank_revs_old=0;
+
+    static unsigned long lastMillis;
+    unsigned long millisPassed = millis() - lastMillis; // time difference between last call
+    lastMillis = millis();
+    bool shouldUpdateClient = false;
+
     /* Calculate simulated measurement values */
-    if (_simulatedSpeedKmph > 0){
-        _wheel_rev_period = (36*64*WHEEL_CIRCUMFERENCE_MM) / 
-                           (625*_simulatedSpeedKmph);
-        _cum_wheel_rev++;
-        _last_wheel_event += _wheel_rev_period;
+    if (_simulatedSpeedKmph > 0) {
+        double speedmps = _simulatedSpeedKmph/3.6;
+        double mmTravelled = speedmps * millisPassed;
+        wheelRevolutions += mmTravelled/WHEEL_CIRCUMFERENCE_MM;
+        _cum_wheel_revs = wheelRevolutions;
+        if (_cum_wheel_revs != cum_wheel_revs_old) {
+            _last_wheel_event += 1024 * ((_cum_wheel_revs - cum_wheel_revs_old) * WHEEL_CIRCUMFERENCE_MM)/(speedmps*1000); // re-calculation of timestamp for the int value
+            cum_wheel_revs_old = _cum_wheel_revs;
+            shouldUpdateClient = true;
+        }
     }
     
-    if (_simulatedCrankRpm > 0){
-        _crank_rev_period = (60*1024) / _simulatedCrankRpm;
-        _cum_cranks++;
-        _last_crank_event += _crank_rev_period; 
+    if (_simulatedCadence > 0) {
+        double cadenceS = _simulatedCadence/60.0;
+        crankRevolutions += cadenceS * (millisPassed/1000.0);
+        _cum_crank_revs = crankRevolutions;
+        if (_cum_crank_revs != cum_crank_revs_old) {
+            _last_crank_event += 1024 * (_cum_crank_revs - cum_crank_revs_old)/cadenceS;
+            cum_crank_revs_old = _cum_crank_revs;
+            shouldUpdateClient = true;
+        }
+    }
+
+    if (shouldUpdateClient) {
+        updateClient();
     }
 }
-
-
