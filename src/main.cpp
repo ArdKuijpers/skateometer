@@ -1,11 +1,9 @@
-#define CORE_DEBUG_LEVEL (4)
-
 #include <Arduino.h>
 #include "mpu.h"
 #include "ble.h"
 
 SkateMPU smpu;
-SkateBLEServer bleserver;
+SkateBLEServer bleserver(BLEServerType::cadence);
 
 void setup() {
     Serial.begin(115200);
