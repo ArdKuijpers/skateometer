@@ -42,6 +42,8 @@ class SkateBLEServer : public BLEServerCallbacks {
         byte _featureFlags;
 
         uint16_t _bleAppearance;
+        
+        BLECharacteristic* _pBatteryLevelCharacteristic;
         void setupBatteryService(BLEServer* pServer);
         
         BLECharacteristic* _pCSCMeasurementCharacteristic;
@@ -54,8 +56,9 @@ class SkateBLEServer : public BLEServerCallbacks {
         void setupHRMService(BLEServer *pServer);
         void notifyHRM();
 
-        BLECharacteristic* _pBatteryLevelCharacteristic;
         void setupDeviceInfoService(BLEServer *pServer);
+
+        void setupUnknownGarminService(BLEServer* pServer);
 
         void setupAdvertising();
         void onConnect(BLEServer* pServer, esp_ble_gatts_cb_param_t* param);

@@ -30,12 +30,13 @@ void SkateBLEServer::setup() {
     Serial.print("...services...");
 
     setupBatteryService(pServer);
+    setupDeviceInfoService(pServer);
+
     if (_bleAppearance == ESP_BLE_APPEARANCE_HEART_RATE_BELT)
         setupHRMService(pServer);
-    else {
-        setupDeviceInfoService(pServer);
+    else 
         setupCyclingSpeedCadenceService(pServer);
-    }
+    
     Serial.print("...advertising...");
     setupAdvertising();
     Serial.println("done");
@@ -88,17 +89,36 @@ void SkateBLEServer::loop() {
     }
 }
 
+void SkateBLEServer::setupUnknownGarminService(BLEServer* pServer)
+{
+    auto service = pServer->createService("6a4e2401-667b-11e3-949a-0800200c9a66");
+    auto pCharacteristic = service->createCharacteristic("6a4ecd28-667b-11e3-949a-0800200c9a66", BLECharacteristic::PROPERTY_NOTIFY);
+    pCharacteristic->addDescriptor(new BLE2902());
+    
+    service->createCharacteristic("6a4e4c80-667b-11e3-949a-0800200c9a66", BLECharacteristic::PROPERTY_WRITE_NR);
+    service->start();
+}
+
 void SkateBLEServer::setupCyclingSpeedCadenceService(BLEServer* pServer)
 {
     auto service = pServer->createService(cyclingSpeedCadenceUUID);
     auto pCSCFeatureCharacteristic = service->createCharacteristic(BLEUUID((uint16_t)0x2A5C), BLECharacteristic::PROPERTY_READ);
+    auto pCSCFeatureDescriptor = new BLEDescriptor(BLEUUID((uint16_t)0x2901));
+    pCSCFeatureDescriptor->setValue("CSC Feature");
+    pCSCFeatureCharacteristic->addDescriptor(pCSCFeatureDescriptor);
     byte cscFeatureFlags[2] = {_featureFlags, 0};
     pCSCFeatureCharacteristic->setValue(cscFeatureFlags, 2);
-        
+
     _pCSCMeasurementCharacteristic = service->createCharacteristic(BLEUUID((uint16_t)0x2A5B), BLECharacteristic::PROPERTY_NOTIFY);
-    auto pDescriptor = new BLE2902();
-    pDescriptor->setNotifications(true);
-    _pCSCMeasurementCharacteristic->addDescriptor(pDescriptor);
+    _pCSCMeasurementCharacteristic->addDescriptor(new BLE2902());
+    // auto pValue = new esp_attr_value_t();
+    // auto datagramsize = 11;
+    // auto pExampleValue = new byte[datagramsize];
+    // pExampleValue[0] = _featureFlags;
+    // pValue->attr_len = datagramsize;
+    // pValue->attr_max_len = datagramsize;
+    // pValue->attr_value = pExampleValue;
+    // _pCSCMeasurementCharacteristic->setCharacteristicValue(pValue);
 
     auto pSensorLocationCharacteristic = service->createCharacteristic((uint16_t)0x2A5D, BLECharacteristic::PROPERTY_READ);
     /* Sensor location enum 
@@ -123,26 +143,8 @@ void SkateBLEServer::setupCyclingSpeedCadenceService(BLEServer* pServer)
     byte sensorLocationValue[1] = {0};
     pSensorLocationCharacteristic->setValue(sensorLocationValue, 1);
 
-    /* SC Control Point op codes
-     * CP_OP_SET_CUMULATIVE_VALUE           1
-     * CP_OP_START_SENSOR_CALIBRATION       2
-     * CP_OP_UPDATE_SENSOR_LOCATION         3
-     * CP_OP_REQ_SUPPORTED_SENSOR_LOCATIONS 4
-     * CP_OP_RESPONSE                       16
-     * 
-     * SC Response
-     * CP_RESPONSE_SUCCESS                  1
-     * CP_RESPONSE_OP_NOT_SUPPORTED         2
-     * CP_RESPONSE_INVALID_PARAM            3
-     * CP_RESPONSE_OP_FAILED                4
-     */
     auto pSCControlPointCharacteristic = service->createCharacteristic(BLEUUID((uint16_t)0x2A55), BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_INDICATE);
-    pDescriptor = new BLE2902();
-    pDescriptor->setIndications(true);
-    pSCControlPointCharacteristic->addDescriptor(pDescriptor);
-    byte opcode[1] = { 1 };
-    pSCControlPointCharacteristic->setValue(opcode, 1);
-
+    pSCControlPointCharacteristic->addDescriptor(new BLE2902());
     service->start();
 }
 
@@ -226,7 +228,7 @@ void SkateBLEServer::notifyCyclingSpeedCadence() {
     memcpy(&cscMeasurement[3+cadenceOffset], &_last_crank_event, 2);
     Serial.print("Crank - rev: " + String(_cum_crank_revs));
     Serial.println(", event time: " + String(_last_crank_event));
-    _pCSCMeasurementCharacteristic->setValue(cscMeasurement, 11);
+    _pCSCMeasurementCharacteristic->setValue(cscMeasurement, 5+cadenceOffset);
     _pCSCMeasurementCharacteristic->notify();
 }
 
@@ -364,7 +366,7 @@ void SkateBLEServer::setupAdvertising() {
     // pAdvertising->setScanResponse(true);
     // pAdvertising->setMinPreferred(0x06);  // functions that help with iPhone connections issue
     // pAdvertising->setMinPreferred(0x12);
-    pAdvertising->setMinPreferred(0x0);  // set value to 0x00 to not advertise this parameter
-    pAdvertising->setScanResponse(false);
+    // pAdvertising->setMinPreferred(0x0);  // set value to 0x00 to not advertise this parameter
+    // pAdvertising->setScanResponse(false);
     BLEDevice::startAdvertising();
 }
